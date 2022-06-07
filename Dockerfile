@@ -5,7 +5,7 @@ FROM golang:1.16.6-alpine3.14 as builder
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # 安装构建阶段的依赖
-#RUN apk --update add gcc libc-dev upx ca-certificates && update-ca-certificates
+RUN apk --update add gcc libc-dev upx ca-certificates && update-ca-certificates
 
 # 将代码copy到构建镜像中
 # 注意，地址最好不要在GOPATH中
