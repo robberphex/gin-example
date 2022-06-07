@@ -9,6 +9,7 @@ import (
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -17,6 +18,12 @@ import (
 
 const AppName = "example-gin-opensergo"
 const Port = 8080
+
+var ignoreNets = []string{
+	"30.39.179.16/30",
+	"fe80::1/24",
+}
+var allowNets = []string{}
 
 func main() {
 	r := gin.Default()
@@ -27,7 +34,7 @@ func main() {
 
 	go func() {
 		routesInfo := r.Routes()
-		processServiceContract(routesInfo, []string{"1.1.1.1"}, make(chan struct{}))
+		processServiceContract(routesInfo, getRegIp(), make(chan struct{}))
 	}()
 
 	r.Run(":" + strconv.Itoa(Port))
@@ -69,7 +76,7 @@ func processServiceContract(routesInfo gin.RoutesInfo, ips []string, stopChan ch
 		},
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(5 * time.Minute)
 	reportPeriodically(stopChan, ticker, req)
 }
 
@@ -82,15 +89,17 @@ func reportPeriodically(stopChan chan struct{}, ticker *time.Ticker, req service
 				return
 			case <-ticker.C:
 				ose := getOpenSergoEndpoint()
-				timeoutCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-				conn, err := google_grpc.DialContext(timeoutCtx, ose, google_grpc.WithTransportCredentials(insecure.NewCredentials()))
-				if err != nil {
-					fmt.Printf("err: %v\n", err)
+				if ose != "" {
+					timeoutCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+					conn, err := google_grpc.DialContext(timeoutCtx, ose, google_grpc.WithTransportCredentials(insecure.NewCredentials()))
+					if err != nil {
+						fmt.Printf("err: %v\n", err)
+					}
+					mClient := service_contract_v1.NewMetadataServiceClient(conn)
+					reply, err := mClient.ReportMetadata(context.Background(), &req)
+					fmt.Printf("ReportMetadata: reply: %v, err: %v\n", reply, err)
+					_ = reply
 				}
-				mClient := service_contract_v1.NewMetadataServiceClient(conn)
-				reply, err := mClient.ReportMetadata(context.Background(), &req)
-				fmt.Printf("ReportMetadata: reply: %v, err: %v\n", reply, err)
-				_ = reply
 			}
 		}
 	}()
@@ -117,4 +126,48 @@ func getOpenSergoEndpoint() string {
 		fmt.Printf("err: %v\n", err)
 	}
 	return config.Endpoint
+}
+
+func getRegIp() []string {
+	var ignoreSubnets []*net.IPNet
+	for _, ignoreNet := range ignoreNets {
+		_, ignoreSubnet, _ := net.ParseCIDR(ignoreNet)
+		ignoreSubnets = append(ignoreSubnets, ignoreSubnet)
+	}
+
+	var allowSubnets []*net.IPNet
+	for _, allowNet := range allowNets {
+		_, allowSubnet, _ := net.ParseCIDR(allowNet)
+		allowSubnets = append(allowSubnets, allowSubnet)
+	}
+
+	var res []string
+
+	ifaces, _ := net.Interfaces()
+	// handle err
+	for _, i := range ifaces {
+		addrs, _ := i.Addrs()
+		// handle err
+	addrLoop:
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+				for _, ignoreSubnet := range ignoreSubnets {
+					if ignoreSubnet.Contains(ipNet.IP) {
+						continue addrLoop
+					}
+				}
+				if len(allowSubnets) == 0 {
+					res = append(res, ipNet.IP.String())
+				} else {
+					for _, allowSubnet := range allowSubnets {
+						if allowSubnet.Contains(ipNet.IP) {
+							res = append(res, ipNet.IP.String())
+							continue addrLoop
+						}
+					}
+				}
+			}
+		}
+	}
+	return res
 }
